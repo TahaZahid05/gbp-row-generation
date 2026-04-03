@@ -1,0 +1,2 @@
+pyscipopt>=4.0
+networkx
