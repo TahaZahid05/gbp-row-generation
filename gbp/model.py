@@ -41,15 +41,22 @@ class CoveringConshdlr(Conshdlr):
             return {"result": SCIP_RESULT.INFEASIBLE}
 
     def consenfolp(self, _constraints, _nusefulconss, solinfeasible):
-        # Strict Paper Logic: Defer separation for fractional solutions to keep LP fast.
-        # But we must NOT return FEASIBLE if the solution is already integral.
+        # LP-level separation: tighten relaxation early for aggressive pruning
         
-        # If any variables are still fractional, we 'pass' to let SCIP branch.
         if solinfeasible:
             return {"result": SCIP_RESULT.FEASIBLE}
         
-        # If it's already integral, we must check it properly.
-        return self.consenfops(_constraints, _nusefulconss, solinfeasible, False)
+        # Extract sequence and check coverage
+        sequence = self._extract_sequence(None)
+        is_valid, violations, max_v = self.sep.check_and_separate(sequence, max_cuts=None)
+        
+        if is_valid:
+            return {"result": SCIP_RESULT.FEASIBLE}
+        else:
+            # Add covering constraints for all violations to tighten LP
+            for w in violations:
+                self._add_covering_constraint(w)
+            return {"result": SCIP_RESULT.CONSADDED}
 
     def consenfops(self, _constraints, _nusefulconss, _solinfeasible, _objinfeasible):
         sequence = self._extract_sequence(None)
@@ -81,6 +88,11 @@ class GBPModel:
         self.scip = Model("GBP-IP")
         # Removing hideOutput so user can see standard SCIP progress logs
         # self.scip.hideOutput()
+        
+        # Set SCIP solver parameters for performance
+        self.scip.setParam("limits/time", 300)
+        self.scip.setParam("heuristics/feaspump/freq", -1)
+        self.scip.setParam("separating/maxroundsroot", 0)
 
         # Decision variables: x[v][i-1] where i is turn 1..B
         from pyscipopt import quicksum
@@ -115,6 +127,26 @@ class GBPModel:
             if vars_in_cons:
                 self.scip.addCons(quicksum(vars_in_cons) >= 1, name=f"init_cov_{w}")
                 self.n_initial_conss += 1
+        
+        # Warm-start with BFF-d solution
+        self._inject_warm_start()
+
+    def _inject_warm_start(self):
+        """
+        Inject the BFF-d solution as a warm start.
+        This allows SCIP to start branch-and-bound with a known feasible sequence,
+        enabling immediate pruning instead of wasting time in the feasibility phase.
+        """
+        # Guard: ensure S_init has exactly B elements
+        if len(self.S_init) != self.B:
+            return
+        
+        sol = self.scip.createSol()
+        
+        for i, v in enumerate(self.S_init):
+            self.scip.setSolVal(sol, self.x_vars[v][i], 1.0)
+        
+        self.scip.addSol(sol)
 
     def solve(self) -> tuple[str, list[int] | None]:
         self.scip.optimize()
