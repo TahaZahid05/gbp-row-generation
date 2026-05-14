@@ -4,6 +4,7 @@ import argparse
 from gbp.graph import Graph
 from gbp.utils import load_graph_from_edgelist, save_result
 from gbp.prym import prym
+import typing
 
 def run_karate_test():
     print("Running hardcoded Karate Club Graph test...")
